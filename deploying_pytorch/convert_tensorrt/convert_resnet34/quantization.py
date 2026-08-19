@@ -36,9 +36,11 @@ def export_onnx(model, onnx_filename, onnx_bs):
                       onnx_filename,
                       verbose=False,
                       opset_version=opset_version,
-                      enable_onnx_checker=False,
                       input_names=["input"],
                       output_names=["output"])
+    import onnx
+    onnx_model = onnx.load(onnx_filename)
+    onnx.checker.check_model(onnx_model)
 
 
 def collect_stats(model, data_loader, num_batches):
