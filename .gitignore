@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# IDE
+.idea/
+
+# Model weights / artifacts
+*.pth
+*.pt
+*.onnx
+*.trt
+*.engine
+*.xml
+*.bin
+trt_output/
+quant_model_calibrated.pth
+
+# Data
+data/
+flower_photos/
+
+# OS
+.DS_Store
