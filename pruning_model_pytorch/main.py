@@ -14,8 +14,8 @@ data_transform = transforms.Compose([transforms.Resize(256),
                                      transforms.ToTensor(),
                                      transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])
 
-data_root = os.path.abspath(os.path.join(os.getcwd(), "../.."))  # get data root path
-image_path = data_root + "/data/flower_photos/"  # flower data set path
+data_root = os.path.expanduser("~/code/data")  # get data root path
+image_path = os.path.join(data_root, "flower_data") + "/"  # flower data set path (split by split_data.py)
 batch_size = 16
 
 
