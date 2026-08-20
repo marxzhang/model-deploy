@@ -86,8 +86,8 @@ def compute_amax(model, **kwargs):
 def main(args):
     quant_modules.initialize()
     assert torch.cuda.is_available(), "only support GPU!"
-
-    train_images_path, train_images_label, val_images_path, val_images_label = read_split_data(args.data_path)
+    datapath = os.path.expanduser(args.data_path)
+    train_images_path, train_images_label, val_images_path, val_images_label = read_split_data(datapath)
 
     data_transform = {
         "train": transforms.Compose([transforms.RandomResizedCrop(224),
@@ -181,10 +181,10 @@ if __name__ == '__main__':
     # 数据集所在根目录
     # https://storage.googleapis.com/download.tensorflow.org/example_images/flower_photos.tgz
     parser.add_argument('--data-path', type=str,
-                        default="/data/flower_photos")
+                        default="~/code/data/flower_photos")
 
     # 训练好的权重路径
-    parser.add_argument('--weights', type=str, default='./resNet(flower).pth',
+    parser.add_argument('--weights', type=str, default='../../../pruning_model_pytorch/resNet34.pth',
                         help='trained weights path')
 
     parser.add_argument('--device', default='cuda:0', help='device id (i.e. 0 or 0,1 or cpu)')

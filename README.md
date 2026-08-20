@@ -69,12 +69,15 @@ pip install pytorch-quantization --extra-index-url https://pypi.ngc.nvidia.com  
 **两个必知的环境坑**（本仓库已踩过并修复）：
 
 1. **cuDNN 与 Ada 显卡（RTX 40 系）**：torch cu118 自带 `nvidia-cudnn-cu11==8.7.0.84`，在 RTX 40 系列上卷积会**段错误崩溃**。需要升级：
+
    ```bash
    pip install nvidia-cudnn-cu11==8.9.6.50
    ```
+
    升级后 cuDNN 仍为 8.x，与 TensorRT 8.6 兼容。
 
 2. **TensorRT builder 缺库**：pip 安装的 `tensorrt` Python 包不包含 `libnvinfer_builder_resource.so`，构建引擎前需：
+
    ```bash
    export LD_LIBRARY_PATH=/usr/local/TensorRT-8.6/lib:$LD_LIBRARY_PATH
    ```
@@ -91,6 +94,7 @@ python split_data.py        # 产出 ~/code/data/flower_data/{train,val}
 ```
 
 切分结果（随机种子固定，可复现）：
+
 - train: 2939 张
 - val: 731 张
 
@@ -177,10 +181,33 @@ python main.py
 
 **原理要点**：
 
-- **为什么剪枝不删"神经元"而置零权重**：`nn.utils.prune` 默认的"非结构化剪枝"只是把权重张量里数值最小的部分**改成 0**（并在 `weight_orig` 记录原始权重、`weight_mask` 记录掩码）。模型结构（形状）完全不变，所以存储占用不变、推理速度通常也不变——它带来的收益主要是**模型文件变小（利于压缩传输）**和**后续稀疏推理/结构化剪枝的基础**。
-- **结构化 vs 非结构化**：非结构化是"权重级别"随机置零，对硬件不友好；结构化（如 `ln_structured` 按卷积核整体裁剪）会**真正删掉整个卷积核**，形状变小，但代码里该部分被注释掉了。示例里注释代码演示了单层 `ln_structured` 裁剪 50% 卷积核、`prune.remove` 永久化。
-- **全局 vs 局部**：`global_unstructured` 把所有层的权重拉通排序、统一置零比例，对小层"不敏感"的权重也能被剪掉；`l1_unstructured` 则是每层单独按比例剪。
-- **注意**：非结构化剪枝后精度通常会有一定下降，需要 **微调（fine-tune）** 恢复，或结合量化一起做。本项目仅演示剪枝机制，未做剪后微调。
+- **剪枝目的**：利用神经网络的参数冗余，删除/置零不重要参数，减少模型参数量、计算量，并提高部署效率。
+
+- **L1 / L2 范数**：
+
+  - **L1**：各元素绝对值之和，例如 `|w1| + |w2| + ...`。在剪枝中常用 `|w|` 衡量**单个权重的重要性**，绝对值越小通常越不重要。
+
+  - **L2**：各元素平方和再开根号，例如 `sqrt(w1² + w2² + ...)`。在结构化剪枝中可以衡量**整个 Filter/Channel 的整体重要性**，范数越小通常越不重要。
+
+- **非结构化剪枝**：以**单个权重**为单位。例如 `global_unstructured(..., L1Unstructured, amount=0.5)`，将所有指定层的权重统一排序，按 `|w|` 剪掉最小的 50%。粒度细、精度通常较稳定，但大量零权重不一定带来实际硬件加速。
+
+- **结构化剪枝**：以 **Filter、Channel 等完整结构单元**为单位。例如：
+
+  prune.ln_structured(module, name="weight",amount=0.5, n=2, dim=0)
+
+  - `amount=0.5`：剪掉 50% 的结构单元；
+
+  - `n=2`：使用 **L2 范数**衡量结构单元的重要性；
+
+  - `dim=0`：对于 Conv2d 的 `[Out, In, H, W]` 权重，沿第 0 维，即剪 **输出 Filter/Channel**。
+
+  - 结构化剪枝更容易真正降低 FLOPs、实现推理加速，但通常对精度影响更明显。
+
+- **`prune.remove()`**：只是移除 PyTorch 的 `mask + weight_orig` 剪枝重参数化，将剪枝后的权重正式保留下来，**不会真正删除 Filter/Channel，也不会改变 Tensor shape**。
+
+- **真正结构压缩**：需要重构网络，例如 `Conv1: 3→64` 剪掉 32 个输出 Channel 后，变成 `3→32`，同时下一层的输入 Channel 也要同步修改。可以手动完成，也可以使用 **Torch-Pruning / DepGraph** 自动分析层间依赖。
+
+- **剪枝后通常需要 Fine-tuning**：通过重新训练让模型适应被删除的参数，恢复部分精度。
 
 ---
 
@@ -245,6 +272,7 @@ python quantization.py \
 ```
 
 产出：
+
 - `quant_model_calibrated.pth`：校准/微调后的量化模型权重
 - `resnet34.onnx`：**含 QDQ 节点**的 INT8 量化 ONNX
 
@@ -260,15 +288,41 @@ python quantization.py \
 
 **原理要点：**
 
-- **为什么要量化**：FP32（4 字节）→ INT8（1 字节），模型体积降到 1/4，INT8 算子在有专门硬件（NVIDIA Tensor Core / DP4A）上速度快数倍。
+- **量化（Quantization）**：用低精度表示高精度数据，如 `FP32 → INT8`，降低模型显存/存储占用，并可能提升推理速度。
+
 - **量化基本公式**：`quant(x) = round(clamp(x / scale, -128, 127))`，`dequant(x) = x * scale`。核心是确定每个张量的 `scale = amax / 127`（权重）或 `amax / 127`（激活）。`amax` 就是该张量激活/权重的绝对最大值估计。
+
+- **PTQ（训练后量化）**：模型训练完成后再量化。通过 **Calibration（校准）**统计 Activation 分布，确定 `scale / zero-point / amax` 等量化规则，然后转换为 INT8。
+
+- **Calibration**：不训练模型，只用少量代表性数据跑模型，统计 Activation 的分布。
+
+- **Histogram Calibration**：记录 Activation 的直方图，再通过 `Max / Percentile / MSE / Entropy` 等方法确定量化范围。
+
+- **QAT（量化感知训练）**：训练时模拟 INT8 的量化误差，使模型主动适应量化，通常比直接 PTQ 精度更好。
+
+- **Fake Quantization**：`FP32 → Quantize → INT8整数 → Dequantize → FP32近似值`；前向使用这个“伪量化值”，而不是原始 FP32 值。
+
+- **QAT 的关键**：**前向模拟 INT8，反向更新 FP32 参数**。
+
+- **STE（Straight-Through Estimator）**：量化/`round()` 本身难以求梯度，因此反向传播时用近似梯度，让 FP32 参数仍能通过梯度下降更新。
+
+- **PTQ + QAT**：PTQ 负责**确定量化规则**，QAT 负责**让模型适应这套规则**，最终再将训练好的参数真正转换为 INT8。
+
 - **PTQ 与 QAT 的区别**：
+
   - PTQ：不训练，只用一小批校准数据统计范围，快，但精度损失略大。
   - QAT：把量化误差（round 噪声）模拟进前向传播（fake quant），训练时梯度照样回传，让权重适应量化后的分布，精度更好。
+
 - **校准方法**：
+
   - `max`：直接用张量绝对最大值，简单但对离群点敏感。
   - `histogram`（如 percentiles）：统计激活值直方图，取 99.99 分位数，能避开极端离群值，通常更稳。
+
 - **QDQ 结构**：`x → QuantizeLinear(x, scale, zp) → DequantizeLinear → 算子`。QDQ 是 ONNX 标准的 INT8 表达，推理引擎看到"先量化再反量化"即可用真实 INT8 内核替换这段算子。
+
+**一句话：**
+
+> **PTQ 是“确定怎么量化”，QAT 是“让模型学会适应这种量化”。**
 
 ---
 
@@ -314,6 +368,7 @@ python compare_onnx_and_trt.py
 - 打印两边的 argmax 预测类别，确认**分类结果一致**。
 
 **原理要点**：
+
 - onnxruntime 在 CPU 上执行 QDQ 节点 = "先量化再反量化"，是**模拟量化**；TensorRT 用 GPU 上的真实 INT8 算子，两者计算路径不同，logits 有微小差异（本项目最大约 0.005）属正常。真正要保证的是**预测类别一致**。
 
 ---
@@ -351,12 +406,12 @@ python compare_onnx_and_trt.py
 
 ### 5. 各环节精度损失来源
 
-| 环节 | 损失来源 | 本项目中观察 |
-|---|---|---|
-| 剪枝 50% | 权重置零 | 精度下降，需微调 |
-| FP32→INT8 | round 量化噪声 | logits 差 ~0.005 |
-| QAT | 训练收敛到量化分布 | 精度可回到 ~0.98+ |
-| ONNX→TRT | 算子融合/内核差异 | 与 ONNX 预测类别一致 |
+| 环节      | 损失来源           | 本项目中观察         |
+| --------- | ------------------ | -------------------- |
+| 剪枝 50%  | 权重置零           | 精度下降，需微调     |
+| FP32→INT8 | round 量化噪声     | logits 差 ~0.005     |
+| QAT       | 训练收敛到量化分布 | 精度可回到 ~0.98+    |
+| ONNX→TRT  | 算子融合/内核差异  | 与 ONNX 预测类别一致 |
 
 ---
 
@@ -373,9 +428,11 @@ RTX 40 系 + torch cu118 自带 cuDNN 8.7 的已知 bug。升级：`pip install 
 
 **Q4：`pytorch-quantization` 装不上 / NGC 源不可达？**
 本项目环境 NGC 源被代理 TLS 阻断，改为从 NVIDIA 官方 GitHub（`v8.6.1` 标签 `tools/pytorch-quantization`）下载源码本地构建安装：
+
 ```bash
 pip install ./pqsrc --no-deps --no-build-isolation
 ```
+
 （需要 torch 的 CUDA 扩展编译环境：nvcc + gcc）
 
 **Q5：权重文件名对不上？**
@@ -389,12 +446,28 @@ pip install ./pqsrc --no-deps --no-build-isolation
 
 ---
 
-## 学习路线建议
+## 部署阶段的优化
 
-1. **先跑通**：按本文顺序跑完训练 → 剪枝 → 导出 ONNX → 量化 → TRT 对比，建立"整条链路"的直觉。
-2. **改参数观察**：改剪枝 `amount`（0.3/0.7）看精度变化；改 `percentile`（99.9/99.99）看量化范围差异；改 `qat` 开关对比 PTQ vs QAT。
-3. **读代码对照**：每个脚本 60-200 行，配合本文"代码做了什么 + 原理要点"逐行读。
-4. **扩展实验**：换成 ResNet101、改 batch、把 `histogram` 校准换成 `max`、尝试结构化剪枝后导出。
-
-祝学习顺利！
-
+模型推理速度
+├── ① 模型层面
+│   ├── 剪枝
+│   ├── 量化
+│   ├── 换轻量模型/减少输入分辨率
+│   └── 算子/结构优化
+│
+├── ② TensorRT 编译层面
+│   ├── Layer Fusion
+│   ├── Tensor Core
+│   ├── 最优 tactic
+│   └── Q/DQ Fusion
+│
+├── ③ 推理执行层面
+│   ├── Batch
+│   ├── CUDA Graph
+│   ├── Multi-Stream
+│   └── Buffer 复用
+│
+└── ④ 工程层面
+    ├── 减少 CPU↔GPU 拷贝
+    ├── 异步预处理/后处理
+    └── Pipeline 并行

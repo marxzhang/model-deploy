@@ -62,7 +62,9 @@ def main():
     model = resnet34(num_classes=5)
     model.load_state_dict(torch.load(weights_path, map_location=device))
     model.to(device)
-    # validate_model(model)
+    count_sparsity(model, p=False)
+    validate_model(model)
+
     # module = model.conv1
     # print(list(module.named_parameters()))
     # # print(list(module.named_buffers()))
@@ -99,7 +101,7 @@ def main():
     #         prune.remove(module, "weight")
     # validate_model(model)
 
-    # torch.save(model.state_dict(), "pruning_model.pth")
+    torch.save(model.state_dict(), "pruning_model.pth")
 
 
 if __name__ == '__main__':

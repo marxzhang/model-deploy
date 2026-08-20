@@ -1,3 +1,7 @@
+# 在 Environment variables 里点击文件夹图标，添加：
+# - Name: LD_LIBRARY_PATH
+# - Value: /usr/local/TensorRT-8.6/lib
+
 import os
 import tensorrt as trt
 
@@ -29,6 +33,14 @@ def build_engine(onnx_path, engine_path):
     with open(engine_path, "wb") as f:
         f.write(serialized)
     print("engine saved to", engine_path)
+
+    # with open(engine_path, "rb") as f:
+    #     engine_data = f.read()
+    #
+    # runtime = trt.Runtime(logger)
+    # engine = runtime.deserialize_cuda_engine(engine_data)
+    #
+    # print(engine)
 
 
 if __name__ == "__main__":

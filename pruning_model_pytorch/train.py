@@ -59,11 +59,13 @@ missing_keys, unexpected_keys = net.load_state_dict(torch.load(model_weight_path
 inchannel = net.fc.in_features
 net.fc = nn.Linear(inchannel, 5)
 net.to(device)
+# net = resnet34(num_classes=5).to(device)
 
 loss_function = nn.CrossEntropyLoss()
 optimizer = optim.Adam(net.parameters(), lr=0.0001)
 
 best_acc = 0.0
+# save_path = './resNet34-from-scartch.pth'
 save_path = './resNet34.pth'
 for epoch in range(3):
     # train

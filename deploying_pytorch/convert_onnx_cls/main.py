@@ -19,7 +19,7 @@ def main(save_path=None):
     # create model
     model = resnet34(num_classes=5)
     # load model weights
-    model_weight_path = "./resNet34.pth"
+    model_weight_path = "../../pruning_model_pytorch/resNet34.pth"
     model.load_state_dict(torch.load(model_weight_path, map_location=device))
     model.eval()
     # input to the model
@@ -55,7 +55,7 @@ def main(save_path=None):
     print("Exported model has been tested with ONNXRuntime, and the result looks good!")
 
     # load test image
-    img = Image.open("../tulip.jpg")
+    img = Image.open("../../tulip.jpg")
 
     # pre-process
     preprocess = transforms.Compose([transforms.Resize([224, 224]),
@@ -72,7 +72,17 @@ def main(save_path=None):
     # np softmax process
     prediction -= np.max(prediction, keepdims=True)  # 为了稳定地计算softmax概率， 一般会减掉最大元素
     prediction = np.exp(prediction) / np.sum(np.exp(prediction), keepdims=True)
-    print(prediction)
+    # print(prediction)
+    # read class_indict
+    try:
+        import json
+        json_file = open('./class_indices.json', 'r')
+        class_indict = json.load(json_file)
+    except Exception as e:
+        print(e)
+        exit(-1)
+    predict_cla = np.argmax(prediction)
+    print(class_indict[str(predict_cla)], prediction[0][predict_cla])
 
 
 if __name__ == '__main__':
